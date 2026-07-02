@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+.pytest_cache/
+*.pyc
+runs/
+*.joblib
+*.npy
+*.npz
+*.log
+*.bak
+.env
+input.csv
+eval_queries.csv
+*_lsa_ready.csv
