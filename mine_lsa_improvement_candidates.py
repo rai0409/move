@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Mine mechanical config-list improvement candidates from LSA retrieval logs."""
+"""Mine mechanical config-list improvement candidates from retrieval logs."""
 
 from __future__ import annotations
 
@@ -64,9 +64,28 @@ SCHEMAS = {
 }
 
 
+ACTION_COLUMNS = [
+    "candidate_id",
+    "action",
+    "target_list",
+    "term",
+    "pattern",
+    "replacement",
+    "canonical",
+    "variant",
+    "direction",
+    "reason",
+    "priority_score",
+    "evidence_count",
+    "status",
+    "note",
+]
+
+
 def ensure_config_xlsx(config_dir: Path) -> dict[str, pd.DataFrame]:
     config_dir.mkdir(parents=True, exist_ok=True)
     out: dict[str, pd.DataFrame] = {}
+
     for filename, columns in SCHEMAS.items():
         path = config_dir / filename
         if path.exists():
@@ -79,11 +98,16 @@ def ensure_config_xlsx(config_dir: Path) -> dict[str, pd.DataFrame]:
             df = pd.DataFrame(columns=columns)
             df.to_excel(path, index=False)
         out[filename] = df
+
     return out
 
 
 def technical_term(term: str) -> bool:
-    return bool(re.search(r"[A-Z]", term) or re.search(r"\d", term) or re.search(r"[A-Za-z][\u3040-\u30ff\u3400-\u9fff]|[\u3040-\u30ff\u3400-\u9fff][A-Za-z]", term))
+    return bool(
+        re.search(r"[A-Z]", term)
+        or re.search(r"\d", term)
+        or re.search(r"[A-Za-z][\u3040-\u30ff\u3400-\u9fff]|[\u3040-\u30ff\u3400-\u9fff][A-Za-z]", term)
+    )
 
 
 def priority(total_miss: int, affected: int, term: str) -> int:
@@ -101,13 +125,20 @@ def priority(total_miss: int, affected: int, term: str) -> int:
 
 def spaced_variants(term: str) -> set[str]:
     collapsed = re.sub(r"[\s_\-]+", "", term)
-    variants = {collapsed, term.replace("_", " "), term.replace("-", " "), term.lower(), term.upper()}
+    variants = {
+        collapsed,
+        term.replace("_", " "),
+        term.replace("-", " "),
+        term.lower(),
+        term.upper(),
+    }
     return {v for v in variants if v and v != term}
 
 
 def hit_text_spacing_variants(term: str, hit_texts: Sequence[str]) -> set[str]:
     collapsed = re.sub(r"[\s_\-]+", "", term).lower()
     variants: set[str] = set()
+
     for text in hit_texts:
         parts = str(text).split()
         for i in range(len(parts)):
@@ -138,13 +169,31 @@ def valid_neighbor_term(term: str, stopwords: set[str]) -> bool:
     return True
 
 
+def load_term_stats(path_value: str | None) -> pd.DataFrame:
+    if not path_value:
+        return pd.DataFrame(columns=["term", "frequency", "doc_frequency", "doc_freq_ratio"])
+
+    path = Path(path_value)
+    if not path.exists():
+        return pd.DataFrame(columns=["term", "frequency", "doc_frequency", "doc_freq_ratio"])
+
+    df = pd.read_csv(path, encoding="utf-8-sig")
+    for col in ["term", "frequency", "doc_frequency", "doc_freq_ratio"]:
+        if col not in df.columns:
+            df[col] = 0 if col != "term" else ""
+    return df[["term", "frequency", "doc_frequency", "doc_freq_ratio"]]
+
+
 def load_term_neighbors(args: argparse.Namespace) -> tuple[pd.DataFrame | None, np.ndarray | None, dict[str, int]]:
     if not args.term_vectors or not args.term_metadata:
         return None, None, {}
+
     vector_path = Path(args.term_vectors)
     metadata_path = Path(args.term_metadata)
+
     if not vector_path.exists() or not metadata_path.exists():
         return None, None, {}
+
     metadata = pd.read_csv(metadata_path, encoding="utf-8-sig")
     vectors = np.load(vector_path)
     index = {str(row["term"]): int(row["term_index"]) for _, row in metadata.iterrows()}
@@ -163,31 +212,40 @@ def append_lsa_neighbor_synonyms(
     metadata, vectors, index = load_term_neighbors(args)
     if metadata is None or vectors is None or not index:
         return cid_start
+
     cid = cid_start
     hit_text_by_term: defaultdict[str, str] = defaultdict(str)
+
     for _, row in results.iterrows():
         hit_text = str(row.get("hit_text", ""))
         for term in str(row.get("missing_terms", "")).split():
             hit_text_by_term[term] += " " + hit_text
+
     for term, miss_count in miss_counter.most_common():
         if term not in index:
             continue
+
         base_idx = index[term]
         sims = vectors @ vectors[base_idx]
         order = np.argsort(-sims)
         emitted = 0
+
         for neighbor_idx in order:
             neighbor_idx = int(neighbor_idx)
             if neighbor_idx == base_idx:
                 continue
+
             sim = float(sims[neighbor_idx])
             if sim < args.min_term_similarity:
                 break
+
             neighbor = str(metadata.iloc[neighbor_idx]["term"])
             if not valid_neighbor_term(neighbor, stopwords):
                 continue
+
             target_boost = neighbor in hit_text_by_term[term]
             pr = priority(miss_count + (1 if target_boost else 0), len(affected_queries[term]), term)
+
             actions.append(
                 {
                     "candidate_id": f"C{cid:04d}",
@@ -208,24 +266,37 @@ def append_lsa_neighbor_synonyms(
             )
             cid += 1
             emitted += 1
+
             if emitted >= args.max_term_neighbors:
                 break
+
     return cid
 
 
 def mine_candidates(args: argparse.Namespace) -> tuple[pd.DataFrame, pd.DataFrame]:
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+
     configs = ensure_config_xlsx(Path(args.config_dir))
     stopwords = existing_terms(configs, "list_stopword.xlsx", "term")
     keep_terms = existing_terms(configs, "list_keep.xlsx", "term")
-    term_stats = pd.read_csv(args.term_stats, encoding="utf-8-sig") if Path(args.term_stats).exists() else pd.DataFrame(columns=["term", "frequency", "doc_frequency", "doc_freq_ratio"])
+
+    term_stats = load_term_stats(args.term_stats)
     term_stat_by_term = {str(r["term"]): r for _, r in term_stats.iterrows()}
+
     results = pd.read_csv(args.query_results, encoding="utf-8-sig")
+
+    if "missing_terms" not in results.columns:
+        results["missing_terms"] = ""
+    if "hit_text" not in results.columns:
+        results["hit_text"] = ""
+    if "query" not in results.columns:
+        results["query"] = ""
 
     miss_counter: Counter[str] = Counter()
     affected_queries: defaultdict[str, set[str]] = defaultdict(set)
     target_groups: defaultdict[tuple[str, str, str], list[str]] = defaultdict(list)
+
     for _, row in results.iterrows():
         for term in str(row.get("missing_terms", "")).split():
             miss_counter[term] += 1
@@ -234,12 +305,22 @@ def mine_candidates(args: argparse.Namespace) -> tuple[pd.DataFrame, pd.DataFram
 
     actions: list[dict[str, Any]] = []
     cid = 1
+
     for term, count in miss_counter.most_common():
         if not term or term.lower() == "nan":
             continue
+
         affected = len(affected_queries[term])
         pr = priority(count, affected, term)
-        hit_texts_for_term = [str(x) for x in results.loc[results["missing_terms"].fillna("").astype(str).str.contains(re.escape(term), regex=True), "hit_text"]] if "hit_text" in results else []
+
+        hit_texts_for_term = [
+            str(x)
+            for x in results.loc[
+                results["missing_terms"].fillna("").astype(str).str.contains(re.escape(term), regex=True),
+                "hit_text",
+            ]
+        ]
+
         for variant in list(hit_text_spacing_variants(term, hit_texts_for_term)) + list(spaced_variants(term)):
             if variant in term_stat_by_term or any(variant in str(x) for x in results.get("hit_text", [])):
                 reason = "space_variant" if re.sub(r"\s+", "", variant) == re.sub(r"\s+", "", term) else "case_variant"
@@ -263,6 +344,7 @@ def mine_candidates(args: argparse.Namespace) -> tuple[pd.DataFrame, pd.DataFram
                 )
                 cid += 1
                 break
+
         if technical_term(term) and term not in stopwords:
             actions.append(
                 {
@@ -283,6 +365,7 @@ def mine_candidates(args: argparse.Namespace) -> tuple[pd.DataFrame, pd.DataFram
                 }
             )
             cid += 1
+
         for (mterm, doc, page), hit_texts in target_groups.items():
             if mterm == term and doc and page and len(hit_texts) >= 2:
                 hit_terms = [t for text in hit_texts for t in str(text).split() if len(t) >= 2 and t != term]
@@ -309,6 +392,7 @@ def mine_candidates(args: argparse.Namespace) -> tuple[pd.DataFrame, pd.DataFram
                     cid += 1
 
     total_docs = max(float(term_stats["doc_frequency"].max()) if not term_stats.empty else 1.0, 1.0)
+
     for _, row in term_stats.iterrows():
         term = str(row.get("term", ""))
         ratio = float(row.get("doc_freq_ratio", row.get("doc_frequency", 0) / total_docs))
@@ -335,19 +419,27 @@ def mine_candidates(args: argparse.Namespace) -> tuple[pd.DataFrame, pd.DataFram
 
     cid = append_lsa_neighbor_synonyms(actions, cid, args, results, miss_counter, affected_queries, stopwords)
 
-    actions_df = pd.DataFrame(actions, columns=["candidate_id", "action", "target_list", "term", "pattern", "replacement", "canonical", "variant", "direction", "reason", "priority_score", "evidence_count", "status", "note"])
+    actions_df = pd.DataFrame(actions, columns=ACTION_COLUMNS)
+
     degradation = []
-    for term in sorted(set(miss_counter) | set(term_stats.get("term", pd.Series(dtype=str)).astype(str))):
+    all_terms = sorted(set(miss_counter) | set(term_stats.get("term", pd.Series(dtype=str)).astype(str)))
+
+    for term in all_terms:
         stats = term_stat_by_term.get(term, {})
         miss = miss_counter[term]
         affected = len(affected_queries[term])
-        rec_action = "keep" if technical_term(term) and miss else ("stopword" if miss == 0 and float(getattr(stats, "get", lambda *_: 0)("doc_freq_ratio", 0) or 0) >= 0.6 else "do_nothing")
+
+        get_stat = getattr(stats, "get", lambda *_: 0)
+        ratio = float(get_stat("doc_freq_ratio", 0) or 0)
+
+        rec_action = "keep" if technical_term(term) and miss else ("stopword" if miss == 0 and ratio >= 0.6 else "do_nothing")
+
         degradation.append(
             {
                 "term": term,
                 "term_type": "technical" if technical_term(term) else "general",
-                "frequency": int(getattr(stats, "get", lambda *_: 0)("frequency", 0) or 0),
-                "doc_frequency": int(getattr(stats, "get", lambda *_: 0)("doc_frequency", 0) or 0),
+                "frequency": int(get_stat("frequency", 0) or 0),
+                "doc_frequency": int(get_stat("doc_frequency", 0) or 0),
                 "query_frequency": int(miss),
                 "total_miss_count": int(miss),
                 "affected_query_count": int(affected),
@@ -365,17 +457,24 @@ def mine_candidates(args: argparse.Namespace) -> tuple[pd.DataFrame, pd.DataFram
                 "status": "candidate" if rec_action != "do_nothing" else "observed",
             }
         )
+
     degradation_df = pd.DataFrame(degradation)
+
     actions_df.to_csv(out_dir / "candidate_actions.csv", index=False, encoding="utf-8-sig")
     degradation_df.to_csv(out_dir / "term_degradation_report.csv", index=False, encoding="utf-8-sig")
-    (out_dir / "recommendations.md").write_text(f"# LSA Candidate Recommendations\n\n- Candidates: {len(actions_df)}\n- Missing terms observed: {len(miss_counter)}\n", encoding="utf-8")
+
+    (out_dir / "recommendations.md").write_text(
+        f"# LSA Candidate Recommendations\n\n- Candidates: {len(actions_df)}\n- Missing terms observed: {len(miss_counter)}\n",
+        encoding="utf-8",
+    )
+
     return actions_df, degradation_df
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--query-results", required=True)
-    p.add_argument("--term-stats", required=True)
+    p.add_argument("--term-stats", default=None)
     p.add_argument("--config-dir", required=True)
     p.add_argument("--output-dir", required=True)
     p.add_argument("--term-vectors")
