@@ -1,0 +1,8 @@
+[
+  {"profile_id":"current","boundary_strategy":"sentence","target_size":750,"max_size":1100,"overlap_strategy":"complete 1-2 sentences","overlap_target":100,"heading_behavior":"preserve in source order","paragraph_behavior":"sentence-aware"},
+  {"profile_id":"sentence_boundary_medium","boundary_strategy":"sentence","target_size":750,"max_size":900,"overlap_strategy":"complete 1-2 sentences","overlap_target":100,"heading_behavior":"preserve in source order","paragraph_behavior":"sentence-aware"},
+  {"profile_id":"paragraph_boundary_medium","boundary_strategy":"paragraph","target_size":800,"max_size":1000,"overlap_strategy":"complete paragraph","overlap_target":100,"heading_behavior":"preserve in source order","paragraph_behavior":"atomic unless oversized; oversized paragraph splits at sentence boundaries"},
+  {"profile_id":"heading_aware","boundary_strategy":"heading+sentence","target_size":750,"max_size":900,"overlap_strategy":"complete 1-2 sentences","overlap_target":100,"heading_behavior":"replicate into child chunks; no heading-only chunk","paragraph_behavior":"sentence-aware"},
+  {"profile_id":"compact","boundary_strategy":"sentence","target_size":500,"max_size":650,"overlap_strategy":"complete 1-2 sentences","overlap_target":65,"heading_behavior":"preserve in source order","paragraph_behavior":"sentence-aware"},
+  {"profile_id":"broad","boundary_strategy":"sentence","target_size":1000,"max_size":1300,"overlap_strategy":"complete 1-2 sentences","overlap_target":150,"heading_behavior":"preserve in source order","paragraph_behavior":"sentence-aware"}
+]

@@ -119,6 +119,28 @@ def apply_updates(args: argparse.Namespace) -> dict[str, Any]:
     return {"dry_run": False, "approved_to_apply": int(len(approved)), "updated": updated}
 
 
+def apply_candidate_actions_for_eval(
+    config_dir: Path,
+    candidate_actions: str | Path,
+    *,
+    max_candidates: int,
+) -> dict[str, Any]:
+    """Apply raw candidate actions to an isolated candidate config for A/B evaluation.
+
+    This intentionally does not update the user's source config and does not imply
+    approval. It only materializes a candidate config so retrieval can be measured.
+    """
+    ensure_config_xlsx(config_dir)
+    actions = pd.read_csv(candidate_actions, encoding="utf-8-sig").head(max_candidates)
+    updated = 0
+    empty_validation = pd.Series(dtype=object)
+    for _, action in actions.iterrows():
+        filename, row, keys = action_to_row(action, empty_validation)
+        append_unique(config_dir / filename, row, keys)
+        updated += 1
+    return {"candidate_config_dir": str(config_dir), "candidate_actions_applied": int(updated)}
+
+
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--config-dir", required=True)

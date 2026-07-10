@@ -12,7 +12,8 @@ Default input columns from lsa_preprocess_and_chunk.py:
   chunk_id_out
   file_name_out
   page_out
-  chunk_text
+  lsa_tokens_str (vector input)
+  chunk_text (display/evaluation)
 
 Default output:
   {base_dir}/model_{craw_name}/step0/df0.csv
@@ -22,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 from pathlib import Path
 from typing import Sequence
 
@@ -53,11 +55,18 @@ MAKE_CE_COLUMNS = [
     "一文字形態素数",
     "一文字形態素数割合",
     "chunk_id",
+    "docid",
+    "chunk_text",
 ]
 
 
 def _stable_hash(value: str) -> str:
     return hashlib.sha1(value.encode("utf-8", errors="ignore")).hexdigest()
+
+
+def _column_hash(values: pd.Series) -> str:
+    payload = "\x1e".join(values.fillna("").astype(str).tolist())
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def convert_lsa_ready_to_make_ce_df0(args: argparse.Namespace) -> pd.DataFrame:
@@ -67,7 +76,7 @@ def convert_lsa_ready_to_make_ce_df0(args: argparse.Namespace) -> pd.DataFrame:
 
     df = pd.read_csv(src, encoding=args.encoding)
 
-    required = [args.chunk_id_col, args.file_col, args.page_col, args.text_col]
+    required = [args.chunk_id_col, args.file_col, args.page_col, args.text_col, args.display_text_col]
     missing = [c for c in required if c not in df.columns]
     if missing:
         raise ValueError(f"missing required input columns: {missing}; available={list(df.columns)}")
@@ -75,9 +84,11 @@ def convert_lsa_ready_to_make_ce_df0(args: argparse.Namespace) -> pd.DataFrame:
     out = pd.DataFrame()
 
     text = df[args.text_col].fillna("").astype(str)
+    display_text = df[args.display_text_col].fillna("").astype(str)
     file_name = df[args.file_col].fillna("").astype(str)
     page = pd.to_numeric(df[args.page_col], errors="coerce").fillna(0).astype(int)
     chunk_id = df[args.chunk_id_col].fillna("").astype(str)
+    docid = df[args.docid_col].fillna("").astype(str) if args.docid_col in df.columns else pd.Series([""] * len(df))
 
     if (chunk_id == "").any():
         chunk_id = [
@@ -92,7 +103,7 @@ def convert_lsa_ready_to_make_ce_df0(args: argparse.Namespace) -> pd.DataFrame:
     out["path_org"] = file_name
     out["path_cpy"] = file_name
     out["pagenum"] = page
-    out["filetextdata"] = text
+    out["filetextdata"] = display_text
     out["filehash"] = [
         _stable_hash(f"{fname}|{pg}|{cid}") for fname, pg, cid in zip(file_name, page, chunk_id)
     ]
@@ -102,16 +113,18 @@ def convert_lsa_ready_to_make_ce_df0(args: argparse.Namespace) -> pd.DataFrame:
     out["pageno"] = page
     out["text"] = text
     out["textdata_yomi"] = ""
-    out["textdata_tess"] = text
+    out["textdata_tess"] = display_text
     out["textdata_abbyy"] = ""
     out["timestamp"] = pd.Timestamp.now().isoformat()
-    out["len"] = text.str.len()
-    out["original_text"] = text
+    out["len"] = display_text.str.len()
+    out["original_text"] = display_text
     out["wakati_text"] = text
     out["形態素数"] = 0
     out["一文字形態素数"] = 0
     out["一文字形態素数割合"] = 0.0
     out["chunk_id"] = chunk_id
+    out["docid"] = docid
+    out["chunk_text"] = display_text
 
     out = out[MAKE_CE_COLUMNS]
 
@@ -122,6 +135,9 @@ def convert_lsa_ready_to_make_ce_df0(args: argparse.Namespace) -> pd.DataFrame:
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     out.to_csv(output_path, index=False, encoding=args.output_encoding)
+    written = pd.read_csv(output_path, encoding=args.output_encoding)
+    source_hash = _column_hash(text)
+    destination_hash = _column_hash(written["text"])
 
     report = {
         "input": str(src),
@@ -133,10 +149,22 @@ def convert_lsa_ready_to_make_ce_df0(args: argparse.Namespace) -> pd.DataFrame:
             args.file_col: "name_org",
             args.page_col: "pageno",
             args.text_col: "text",
+            args.display_text_col: "chunk_text",
+            args.docid_col: "docid",
         },
+        "source_column": args.text_col,
+        "destination_column": "text",
+        "source_hash": source_hash,
+        "destination_hash": destination_hash,
+        "source_destination_hash_match": source_hash == destination_hash,
+        "row_count_match": len(df) == len(written),
+        "empty_token_rows": int((text.str.strip() == "").sum()),
+        "make_ce_clean_effective": False,
+        "make_ce_chunk_effective": False,
+        "one_input_row_one_vector": True,
     }
     report_path = output_path.with_suffix(".convert_report.json")
-    report_path.write_text(pd.Series(report).to_json(force_ascii=False, indent=2), encoding="utf-8")
+    report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
 
     return out
 
@@ -150,7 +178,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     p.add_argument("--chunk-id-col", default="chunk_id_out")
     p.add_argument("--file-col", default="file_name_out")
     p.add_argument("--page-col", default="page_out")
-    p.add_argument("--text-col", default="chunk_text")
+    p.add_argument("--text-col", default="lsa_tokens_str")
+    p.add_argument("--display-text-col", default="chunk_text")
+    p.add_argument("--docid-col", default="docid")
     p.add_argument("--encoding", default="utf-8-sig")
     p.add_argument("--output-encoding", default="utf-8-sig")
     return p.parse_args(argv)

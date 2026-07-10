@@ -41,6 +41,11 @@ def backup_and_replace_config(src: Path, dst: Path, backup_dir: Path) -> None:
 
 
 def run_one_cycle_pipeline(args: argparse.Namespace, config_dir: Path, output_dir: Path) -> dict[str, Any]:
+    print(
+        "[run_cycles] one_cycle input="
+        f"{args.input} queries={args.queries} config_dir={config_dir} output_dir={output_dir} "
+        f"text_col={args.text_col} vector_text_col={args.vector_text_col}"
+    )
     argv = [
         "--input",
         args.input,
@@ -69,14 +74,26 @@ def run_one_cycle_pipeline(args: argparse.Namespace, config_dir: Path, output_di
         args.chunk_profile,
         "--vector-text-col",
         args.vector_text_col,
+        "--min-evaluated-queries",
+        str(args.min_evaluated_queries),
+        "--tokenizer",
+        args.tokenizer,
+        "--morphology-profile",
+        args.morphology_profile,
     ]
 
     if args.file_col:
         argv.extend(["--file-col", args.file_col])
     if args.page_col:
         argv.extend(["--page-col", args.page_col])
+    if args.queries_encoding:
+         argv.extend(["--queries-encoding", args.queries_encoding])
     if args.python_exe:
         argv.extend(["--python-exe", args.python_exe])
+    if args.dictionary_path:
+        argv.extend(["--dictionary-path", args.dictionary_path])
+    if args.mecab_options:
+        argv.extend(["--mecab-options", args.mecab_options])
     if args.skip_space:
         argv.append("--skip-space")
     if args.skip_vectors:
@@ -85,6 +102,16 @@ def run_one_cycle_pipeline(args: argparse.Namespace, config_dir: Path, output_di
         argv.append("--use-mean-tfidf")
     if args.allow_dense_mean:
         argv.append("--allow-dense-mean")
+    if getattr(args, "enable_param_tuning", False):
+        argv.extend(
+            [
+                "--enable-param-tuning",
+                "--tuning-profile",
+                args.tuning_profile,
+                "--max-tuning-candidates",
+                str(args.max_tuning_candidates),
+            ]
+        )
 
     return run_auto_improve(parse_auto_args(argv))
 
@@ -183,11 +210,13 @@ def run_cycles(args: argparse.Namespace) -> dict[str, Any]:
     accepted = 0
     rolled_back = 0
     stopped = 0
+    consecutive_rollbacks = 0
 
     for cycle in range(1, args.cycles + 1):
         cycle_dir = out / f"cycle_{cycle:03d}"
         snapshot = cycle_dir / "config_snapshot"
         copy_config(working_config, snapshot)
+        print(f"[run_cycles] cycle={cycle} snapshot={snapshot}")
 
         before_run = cycle_dir / "before"
         before = run_one_cycle_pipeline(args, working_config, before_run)
@@ -235,20 +264,28 @@ def run_cycles(args: argparse.Namespace) -> dict[str, Any]:
         score_after = float(after["baseline_score"])
         score_delta = score_after - score_before
 
-        recall5_before = float(before_metrics.get("recall_at_5") or 0)
-        recall5_after = float(after_metrics.get("recall_at_5") or 0)
-        recall_drop = args.rollback_if_score_drops and recall5_after < recall5_before
+        core_keys = ["recall_at_1", "recall_at_5", "recall_at_20", "mrr"]
+        core_before = {key: float(before_metrics.get(key) or 0) for key in core_keys}
+        core_after = {key: float(after_metrics.get(key) or 0) for key in core_keys}
+        no_core_drop = all(core_after[key] >= core_before[key] for key in core_keys)
+        meaningful_gain = (
+            core_after["recall_at_1"] - core_before["recall_at_1"] >= args.min_score_delta
+            or core_after["mrr"] - core_before["mrr"] >= args.min_score_delta
+        )
+        same_evaluated_count = before_metrics.get("evaluated_query_count") == after_metrics.get("evaluated_query_count")
 
-        if score_after >= score_before + args.min_score_delta and not recall_drop:
+        if no_core_drop and meaningful_gain and same_evaluated_count:
             copy_config(temp_config, working_config)
             decision = "accepted"
             accepted += 1
             best_run_dir = after_run
             best_score = score_after
+            consecutive_rollbacks = 0
         else:
             copy_config(snapshot, working_config)
             decision = "rolled_back"
             rolled_back += 1
+            consecutive_rollbacks += 1
 
         cycle_rows.append(
             {
@@ -257,16 +294,16 @@ def run_cycles(args: argparse.Namespace) -> dict[str, Any]:
                 "score_before": score_before,
                 "score_after": score_after,
                 "score_delta": score_delta,
-                "recall5_before": recall5_before,
-                "recall5_after": recall5_after,
+                "recall5_before": core_before["recall_at_5"],
+                "recall5_after": core_after["recall_at_5"],
                 "approved_applied": len(validation),
-                "reason": "accepted score improvement"
+                "reason": "accepted measured recall@1/MRR improvement with no core metric drop"
                 if decision == "accepted"
-                else "score improvement below threshold or recall_at_5 dropped",
+                else "rolled back: insufficient gain, core metric drop, or evaluated query count mismatch",
             }
         )
 
-        if decision == "rolled_back" or score_delta < args.min_score_delta:
+        if decision == "rolled_back" and consecutive_rollbacks >= args.max_consecutive_rollbacks:
             break
 
     final_dir = out / "final"
@@ -290,6 +327,11 @@ def run_cycles(args: argparse.Namespace) -> dict[str, Any]:
     final_metrics["composite_score"] = best_score
     final_metrics["backend"] = "make_ce"
     final_metrics["craw_name"] = args.craw_name
+    final_metrics["input_csv"] = args.input
+    final_metrics["queries_csv"] = args.queries
+    final_metrics["text_col"] = args.text_col
+    final_metrics["vector_text_col"] = args.vector_text_col
+    final_metrics["working_config"] = str(working_config)
 
     (final_dir / "final_metrics.json").write_text(
         json.dumps(final_metrics, ensure_ascii=False, indent=2),
@@ -337,6 +379,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
     p.add_argument("--input", required=True)
     p.add_argument("--queries", required=True)
+    p.add_argument("--queries-encoding")
     p.add_argument("--text-col", required=True)
     p.add_argument("--file-col")
     p.add_argument("--page-col")
@@ -345,13 +388,22 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     p.add_argument("--output-dir", required=True)
 
     p.add_argument("--base-dir", default=r"C:\project\document_viewer\_data_assets")
-    p.add_argument("--craw-name", required=True)
+    p.add_argument("--craw-name", default="my_project")
     p.add_argument("--make-ce-script", default="make_ce_v1.py")
     p.add_argument("--python-exe")
     p.add_argument("--n-clusters", type=int, default=0)
     p.add_argument("--top-k", type=int, default=10)
-    p.add_argument("--chunk-profile", default="none")
-    p.add_argument("--vector-text-col", default="auto")
+    p.add_argument("--chunk-profile", default="current")
+    p.add_argument("--tokenizer", choices=["regex", "mecab_ipadic_utf8_v102", "sudachi_small_b", "sudachi_small_c", "sudachi_core_b", "sudachi_core_c"], default="mecab_ipadic_utf8_v102",
+                   help="regex is compatibility/test only and is never included in tuning candidates")
+    p.add_argument("--dictionary-path")
+    p.add_argument("--mecab-options", default="")
+    p.add_argument("--morphology-profile", choices=["noun_only", "content_surface", "content_lemma", "surface_plus_lemma"], default="content_lemma")
+    p.add_argument("--vector-text-col", default="text")
+    p.add_argument("--enable-param-tuning", action="store_true")
+    p.add_argument("--tuning-profile", choices=["minimal"], default="minimal")
+    p.add_argument("--max-tuning-candidates", type=int, default=5)
+    p.add_argument("--min-evaluated-queries", type=int, default=1)
 
     p.add_argument("--use-mean-tfidf", action="store_true")
     p.add_argument("--allow-dense-mean", action="store_true")
@@ -364,7 +416,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     p.add_argument("--max-approved-per-cycle", type=int, default=5)
     p.add_argument("--min-score-delta", type=float, default=0.01)
     p.add_argument("--stop-if-no-approved", action="store_true")
-    p.add_argument("--rollback-if-score-drops", action="store_true")
+    p.add_argument("--max-consecutive-rollbacks", type=int, default=1)
+    p.add_argument("--rollback-if-score-drops", dest="rollback_if_score_drops", action="store_true", default=True)
+    p.add_argument("--no-rollback-if-score-drops", dest="rollback_if_score_drops", action="store_false")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--apply", action="store_true")
 

@@ -1,0 +1,17 @@
+{
+  "baseline_identifier":"mecab_ipadic_utf8_v102",
+  "unicode_normalization":"NFKC",
+  "control_character_policy":"remove zero-width; normalize Unicode spaces and CRLF",
+  "lowercase_policy":"ASCII letters are lowercased identically for documents and queries",
+  "numeric_policy":"retain numbers and protect fiscal year, article, page, money, and model identifiers",
+  "punctuation_policy":"drop standalone symbols; retain protected internal hyphen and slash",
+  "protected_patterns":["URL","email","model_number","article_number","fiscal_year","page","money"],
+  "pos_policy":"content_lemma: nouns/proper nouns/sahen nouns plus verb/adjective lemma; OOV surface",
+  "lemma_policy":"noun surface; verb/adjective lemma; Sudachi uses normalized_form consistently",
+  "stopwords_path":"config/safe_ja_stopwords.txt",
+  "keep_words_path":"config/protected_terms.txt and config/list_keep.xlsx when present",
+  "priority":["keep_words","protected_patterns","POS selection","minimum token length","stopwords"],
+  "document_query_consistency":"legacy_lsa loads the saved profile and applies the same normalize/tokenize path; make_ce_direct transforms raw text and raw query through the same saved vectorizer",
+  "token_join_policy":"single ASCII space",
+  "environment_blockers":["fugashi_not_installed","mecab_dictionary_path_not_configured","sudachipy_not_installed","sudachidict_small_not_installed","sudachidict_core_not_installed"]
+}

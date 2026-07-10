@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -39,6 +40,11 @@ def build_make_ce_vectors(args: argparse.Namespace) -> dict[str, Any]:
     step0_dir = model_dir / "step0"
     df0_path = step0_dir / "df0.csv"
     step0_dir.mkdir(parents=True, exist_ok=True)
+    print(
+        "[make_ce_backend] convert input="
+        f"{args.lsa_ready} output={df0_path} text_col={args.text_col} "
+        f"id_col={args.chunk_id_col} file_col={args.file_col} page_col={args.page_col}"
+    )
 
     convert_args = parse_convert_args(
         [
@@ -58,9 +64,16 @@ def build_make_ce_vectors(args: argparse.Namespace) -> dict[str, Any]:
             args.page_col,
             "--text-col",
             args.text_col,
+            "--display-text-col",
+            args.display_text_col,
+            "--docid-col",
+            args.docid_col,
         ]
     )
     df0 = convert_lsa_ready_to_make_ce_df0(convert_args)
+    profile_source = Path(args.preprocessing_profile) if args.preprocessing_profile else Path(args.lsa_ready).parent / "preprocessing_profile.json"
+    if profile_source.exists():
+        shutil.copyfile(profile_source, model_dir / "preprocessing_profile.json")
 
     python_exe = args.python_exe or sys.executable
 
@@ -92,6 +105,13 @@ def build_make_ce_vectors(args: argparse.Namespace) -> dict[str, Any]:
 
     result = {
         "backend": "make_ce",
+        "lsa_ready_csv": str(args.lsa_ready),
+        "lsa_ready_text_col": args.text_col,
+        "lsa_ready_display_text_col": args.display_text_col,
+        "vector_input_source": "lsa_tokens_str",
+        "lsa_ready_chunk_id_col": args.chunk_id_col,
+        "lsa_ready_file_col": args.file_col,
+        "lsa_ready_page_col": args.page_col,
         "base_dir": str(base_dir),
         "craw_name": args.craw_name,
         "model_dir": str(model_dir),
@@ -101,6 +121,11 @@ def build_make_ce_vectors(args: argparse.Namespace) -> dict[str, Any]:
         "step2_dir": str(model_dir / "step2"),
         "make_ce_script": str(make_ce_script),
         "n_clusters": int(args.n_clusters),
+        "make_ce_clean_effective": False,
+        "make_ce_chunk_effective": False,
+        "one_input_row_one_vector": True,
+        "preprocessing_profile": str(model_dir / "preprocessing_profile.json") if (model_dir / "preprocessing_profile.json").exists() else None,
+        "conversion_report": str(df0_path.with_suffix(".convert_report.json")),
     }
 
     out_dir = Path(args.output_dir) if args.output_dir else model_dir
@@ -125,7 +150,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     p.add_argument("--chunk-id-col", default="chunk_id_out")
     p.add_argument("--file-col", default="file_name_out")
     p.add_argument("--page-col", default="page_out")
-    p.add_argument("--text-col", default="chunk_text")
+    p.add_argument("--text-col", default="lsa_tokens_str")
+    p.add_argument("--display-text-col", default="chunk_text")
+    p.add_argument("--docid-col", default="docid")
+    p.add_argument("--preprocessing-profile")
 
     p.add_argument("--n-clusters", type=int, default=0)
     p.add_argument("--skip-space", action="store_true")

@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
+import time
 from collections import Counter
 from pathlib import Path
 from typing import Sequence
@@ -29,6 +31,11 @@ def analyzer(text: str) -> list[str]:
 def build_vector_space(args: argparse.Namespace) -> dict[str, object]:
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    print(
+        "[build_lsa_vector_space] input="
+        f"{args.input} output_dir={output_dir} text_col={args.text_col} "
+        f"id_col={args.id_col} display_col={args.display_col}"
+    )
     df = pd.read_csv(args.input, encoding=args.encoding)
     if args.text_col not in df.columns:
         raise ValueError(f"text_col missing: {args.text_col}")
@@ -37,13 +44,19 @@ def build_vector_space(args: argparse.Namespace) -> dict[str, object]:
 
     texts = df[args.text_col].fillna("").astype(str).tolist()
     min_df = min(max(1, int(args.min_df)), max(1, len(texts)))
-    vectorizer = TfidfVectorizer(analyzer=analyzer, tokenizer=None, preprocessor=None, token_pattern=None, min_df=min_df, max_df=args.max_df)
+    started = time.perf_counter()
+    vectorizer = TfidfVectorizer(
+        analyzer="word", tokenizer=str.split, preprocessor=None, token_pattern=None, lowercase=False,
+        min_df=min_df, max_df=args.max_df, sublinear_tf=args.sublinear_tf, norm=args.norm,
+        use_idf=args.use_idf, smooth_idf=args.smooth_idf, binary=args.binary,
+        ngram_range=(args.ngram_min, args.ngram_max),
+    )
     tfidf = vectorizer.fit_transform(texts)
     n_features = tfidf.shape[1]
     max_components = max(0, min(int(args.svd_dim), n_features - 1, len(texts) - 1))
     svd: TruncatedSVD | None = None
     if max_components >= 1:
-        svd = TruncatedSVD(n_components=max_components, random_state=42)
+        svd = TruncatedSVD(n_components=max_components, random_state=args.random_state, n_iter=args.n_iter, algorithm=args.algorithm)
         vectors = svd.fit_transform(tfidf)
     else:
         vectors = tfidf.toarray()
@@ -56,6 +69,7 @@ def build_vector_space(args: argparse.Namespace) -> dict[str, object]:
             "file_name_out": df[args.file_col] if args.file_col in df.columns else "",
             "page_out": df[args.page_col] if args.page_col in df.columns else "",
             "lsa_tokens_str": texts,
+            "docid": df["docid"] if "docid" in df.columns else "",
         }
     )
     metadata.to_csv(output_dir / "metadata.csv", index=False, encoding="utf-8-sig")
@@ -99,9 +113,26 @@ def build_vector_space(args: argparse.Namespace) -> dict[str, object]:
         "svd_dim_used": int(max_components),
         "min_df_used": int(min_df),
         "max_df": args.max_df,
+        "sublinear_tf": bool(args.sublinear_tf),
+        "norm": args.norm,
+        "use_idf": bool(args.use_idf),
+        "smooth_idf": bool(args.smooth_idf),
+        "binary": bool(args.binary),
+        "ngram_range": [args.ngram_min, args.ngram_max],
+        "tokenizer": "whitespace_analyzer", "preprocessor": None, "token_pattern": None, "lowercase": False,
+        "random_state": args.random_state, "n_iter": args.n_iter, "algorithm": args.algorithm,
+        "explained_variance_ratio_sum": float(svd.explained_variance_ratio_.sum()) if svd is not None else None,
+        "vector_build_time_seconds": time.perf_counter() - started,
         "export_term_vectors": bool(args.export_term_vectors),
     }
     (output_dir / "build_report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    profile_source = Path(args.preprocessing_profile) if args.preprocessing_profile else Path(args.input).parent / "preprocessing_profile.json"
+    if profile_source.exists():
+        shutil.copyfile(profile_source, output_dir / "preprocessing_profile.json")
+    lineage_cols = [c for c in ["tokenizer_name", "morphology_profile", "dictionary_name", "dictionary_version", "dictionary_charset", "dictionary_path", "split_mode", "chunk_profile"] if c in df.columns]
+    lineage = {c: sorted(str(x) for x in df[c].dropna().unique()) for c in lineage_cols}
+    lineage.update({"input": str(args.input), "text_col": args.text_col, "tfidf_svd": report})
+    (output_dir / "model_lineage.json").write_text(json.dumps(lineage, ensure_ascii=False, indent=2), encoding="utf-8")
     return report
 
 
@@ -116,7 +147,18 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     p.add_argument("--output-dir", required=True)
     p.add_argument("--min-df", type=int, default=3)
     p.add_argument("--max-df", type=float, default=0.95)
-    p.add_argument("--svd-dim", type=int, default=150)
+    p.add_argument("--svd-dim", type=int, default=100)
+    p.add_argument("--sublinear-tf", action=argparse.BooleanOptionalAction, default=False)
+    p.add_argument("--norm", choices=["l1", "l2"], default="l2")
+    p.add_argument("--use-idf", action=argparse.BooleanOptionalAction, default=True)
+    p.add_argument("--smooth-idf", action=argparse.BooleanOptionalAction, default=True)
+    p.add_argument("--binary", action=argparse.BooleanOptionalAction, default=False)
+    p.add_argument("--ngram-min", type=int, default=1)
+    p.add_argument("--ngram-max", type=int, default=1)
+    p.add_argument("--random-state", type=int, default=42)
+    p.add_argument("--n-iter", type=int, default=5)
+    p.add_argument("--algorithm", choices=["randomized", "arpack"], default="randomized")
+    p.add_argument("--preprocessing-profile")
     p.add_argument("--encoding", default="utf-8-sig")
     p.add_argument("--export-term-vectors", action="store_true")
     return p.parse_args(argv)

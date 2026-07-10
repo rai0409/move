@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import pandas as pd
+import pytest
 
-from lsa_preprocess_and_chunk import build_output, normalize_text, parse_args
+from lsa_preprocess_and_chunk import build_output, chunk_text, normalize_text, parse_args, tokenize
 
 
 def make_args(tmp_path, input_path, profile="none"):
@@ -108,3 +109,29 @@ def test_risky_words_are_not_removed_by_stopwords(tmp_path):
     tokens = out_df.loc[0, "lsa_tokens_str"].split()
     assert "ない" in tokens or any("ない" in token for token in tokens)
     assert "必要" in tokens or any("必要" in token for token in tokens)
+
+
+def test_mecab_baseline_never_falls_back_to_regex(tmp_path):
+    input_path = tmp_path / "in.csv"
+    pd.DataFrame({"text": ["公団住宅の入居資格を確認する。"]}).to_csv(input_path, index=False)
+    args = parse_args(["--input", str(input_path), "--output", str(tmp_path / "out.csv"), "--text-col", "text"])
+    with pytest.raises(RuntimeError, match="dictionary|fugashi"):
+        build_output(args)
+
+
+def test_protected_model_and_fiscal_year_are_injected():
+    tokens = tokenize(
+        "ABC-123製品の申請条件を2026年度版で確認する。", "regex", set(), False, {}, set(),
+        morphology_profile="content_lemma",
+    )
+    assert "abc-123" in tokens
+    assert "2026年度" in tokens
+
+
+def test_sentence_overlap_and_lineage_do_not_cut_sentences():
+    text = "第一文です。" * 100
+    chunks = chunk_text(text, "compact", {"target_chars": None, "overlap": None, "hard_max": None, "min_chars": None})
+    assert len(chunks) > 1
+    assert all(chunk["chunk_text"].endswith("。") for chunk in chunks)
+    assert all(not chunk["forced_slice"] for chunk in chunks)
+    assert all("source_start" in chunk and "sentence_start" in chunk for chunk in chunks)

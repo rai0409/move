@@ -12,3 +12,20 @@ runs/
 input.csv
 eval_queries.csv
 *_lsa_ready.csv
+
+# Local LSA datasets and runtime artifacts
+df0.csv
+lsa_ready.csv
+KLコンペ公開クエリ_拡張.csv
+failed_queries.csv
+metrics.json
+chunk_quality.csv
+tokenizer_quality.csv
+tuning_leaderboard.csv
+model_tuning_selection_result.json
+*.zip
+
+# Python/runtime
+__pycache__/
+*.pyc
+.pytest_cache/

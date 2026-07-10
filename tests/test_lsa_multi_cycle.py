@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from pathlib import Path
+import importlib.util
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from build_lsa_vector_space import build_vector_space, parse_args as parse_build_args
 from mine_lsa_improvement_candidates import mine_candidates, parse_args as parse_mine_args
@@ -76,6 +78,8 @@ def cycle_fixture(tmp_path: Path) -> tuple[Path, Path, Path]:
 
 
 def run_cycle_fixture(tmp_path: Path, cycles: int = 3) -> dict[str, object]:
+    if importlib.util.find_spec("make_space_v1_r2") is None:
+        pytest.skip("make_ce dependencies are not shared on this PC")
     input_csv, queries, config_dir = cycle_fixture(tmp_path)
     return run_cycles(
         parse_cycle_args(
@@ -104,6 +108,8 @@ def run_cycle_fixture(tmp_path: Path, cycles: int = 3) -> dict[str, object]:
                 "0.01",
                 "--rollback-if-score-drops",
                 "--dry-run",
+                "--tokenizer",
+                "regex",
             ]
         )
     )
@@ -159,6 +165,8 @@ def test_multi_cycle_dry_run_completes(tmp_path):
 
 
 def test_dry_run_does_not_modify_original_config_files(tmp_path):
+    if importlib.util.find_spec("make_space_v1_r2") is None:
+        pytest.skip("make_ce dependencies are not shared on this PC")
     input_csv, queries, config_dir = cycle_fixture(tmp_path)
     before = sorted(p.name for p in config_dir.iterdir())
     run_cycles(
@@ -180,7 +188,9 @@ def test_dry_run_does_not_modify_original_config_files(tmp_path):
                 str(tmp_path / "cycles"),
                 "--cycles",
                 "1",
-                "--dry-run",
+                    "--dry-run",
+                    "--tokenizer",
+                    "regex",
             ]
         )
     )
